@@ -1,0 +1,73 @@
+name: Build & Test DJPhone v15.1 IPA
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Locate Project Root (Auto-Unzip if Uploaded as .zip)
+        run: |
+          if [ ! -d "DJPhone.xcodeproj" ]; then
+            ZIP_FILE=$(find . -maxdepth 2 -name "*.zip" | head -n 1)
+            if [ -n "$ZIP_FILE" ]; then
+              echo "Found zip archive $ZIP_FILE, extracting..."
+              unzip -o "$ZIP_FILE"
+            fi
+          fi
+          PROJ_DIR=$(find . -maxdepth 3 -name "DJPhone.xcodeproj" -exec dirname {} \; | head -n 1)
+          if [ -z "$PROJ_DIR" ]; then
+            echo "❌ 未找到 DJPhone.xcodeproj，请确认已将源码文件或 zip 包上传至仓库（Code 标签页）！"
+            ls -la
+            exit 1
+          fi
+          echo "PROJECT_ROOT=$PROJ_DIR" >> $GITHUB_ENV
+
+      - name: Verify Swift Source Version Headers (No Stale v10.0..v15.0 Headers)
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          for STALE in "v10.0" "v11.0" "v12.0" "v13.0" "v14.0" "v15.0"; do
+            if grep -Fq "$STALE" DJPhone/*.swift; then
+              echo "❌ ERROR: Found stale version string $STALE in DJPhone/*.swift"
+              exit 1
+            fi
+          done
+          echo "✅ Swift source version headers verified (v15.1)!"
+
+      - name: Run Engine, Stream Decoder, Migration & Driver-Coordinator Automated Tests (Enforce >= 22 Suites)
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          swiftc DJPhone/ATProtocolEngine.swift Tests/main.swift -o /tmp/djphone_v15_1_tests
+          /tmp/djphone_v15_1_tests | tee /tmp/djphone_test_output.log
+          PASSED_COUNT=$(grep -c "✅ Test " /tmp/djphone_test_output.log || true)
+          echo "Verified passed test suites: $PASSED_COUNT"
+          if [ "$PASSED_COUNT" -lt 22 ]; then
+            echo "❌ ERROR: Test suite count ($PASSED_COUNT) is below minimum required (22)!"
+            exit 1
+          fi
+
+      - name: Build Application Binary (iphoneos Release)
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: xcodebuild clean build -project DJPhone.xcodeproj -scheme DJPhone -configuration Release -sdk iphoneos CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO CONFIGURATION_BUILD_DIR=build
+
+      - name: Package App into IPA
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          mkdir -p Payload
+          cp -r build/DJPhone.app Payload/
+          zip -r "$GITHUB_WORKSPACE/DJPhone-v15.1.ipa" Payload
+
+      - name: Upload DJPhone.ipa Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DJPhone-v15.1-IPA
+          path: DJPhone-v15.1.ipa
